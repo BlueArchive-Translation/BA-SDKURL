@@ -1,38 +1,67 @@
 export default {
     async fetch(request, env, ctx) {
         const url = new URL(request.url);
-        if (url.pathname === '/user/agreement' && request.method === 'POST') {
-            if (env.KV) {
-                try {
-                    const reqData = await request.clone().json();
-                    if (reqData && Array.isArray(reqData.Type) && reqData.Type.length > 0) {
-                        const agreementType = reqData.Type[0];
-                        let kvKey = null;
-                        if (agreementType === 'user_agreement') {
-                            kvKey = 'agreement.json';
-                        } else
-                            if (agreementType === 'privacy_agreement') {
-                                kvKey = 'agreement2.json';
-                            }
-                        if (kvKey) {
-                            const kvText = await env.KV.get(kvKey);
-                            if (kvText) {
-                                return new Response(
-                                    kvText,
-                                    {
-                                        status: 200,
-                                        headers: {
-                                            'Content-Type': 'application/json; charset=utf-8',
-                                            'Access-Control-Allow-Origin': '*'
+        if (url.pathname === '/user/agreement' && request.method === 'POST' && env.KV) {
+            try {
+                const reqData = await request.clone().json();
+                if (reqData && Array.isArray(reqData.Type) && reqData.Type.length > 0) {
+                    const agreementTypes = reqData.Type.filter(type => type === 'user_agreement' || type === 'privacy_agreement');
+                    if (agreementTypes.length > 0) {
+                        const targetUrl = new URL(url.pathname + url.search, 'https://jp-sdk-api.yostarplat.com');
+                        const headers = new Headers(request.headers);
+                        headers.delete('Host');
+                        headers.delete('Content-Length');
+                        headers.delete('Transfer-Encoding');
+                        const init = {
+                            method: request.method,
+                            headers,
+                            redirect: 'follow',
+                            body: request.body
+                        };
+                        const modifiedRequest = new Request(targetUrl.toString(), init);
+                        const response = await fetch(modifiedRequest);
+                        if (response.ok) {
+                            const data = await response.json();
+                            if (data && data.Data && Array.isArray(data.Data.List)) {
+                                const typesToReplace = new Set(agreementTypes);
+                                await Promise.all(
+                                    data.Data.List.map(
+                                        async item => {
+                                            if (item && typesToReplace.has(item.Type)) {
+                                                const kvContent = await env.KV.get(item.Type);
+                                                if (kvContent !== null) {
+                                                    item.Content = kvContent;
+                                                }
+                                            }
                                         }
+                                    )
+                                );
+                                const origin = request.headers.get('Origin');
+                                const newHeaders = new Headers(response.headers);
+                                newHeaders.set('Content-Type', 'application/json; charset=utf-8');
+                                if (origin) {
+                                    newHeaders.set('Access-Control-Allow-Origin', origin);
+                                    newHeaders.set('Vary', 'Origin');
+                                } else {
+                                    newHeaders.delete('Access-Control-Allow-Origin');
+                                }
+                                newHeaders.set('Access-Control-Allow-Credentials', 'true');
+                                return new Response(
+                                    JSON.stringify(data),
+                                    {
+                                        status: response.status,
+                                        statusText: response.statusText,
+                                        headers: newHeaders
                                     }
                                 );
                             }
+                            return response;
                         }
+                        return response;
                     }
-                } catch (e) {
-                    console.error('解析 /user/agreement 请求体失败:', e);
                 }
+            } catch (e) {
+                console.error('处理 /user/agreement 请求失败:', e);
             }
         }
         if (url.pathname === '/common/client-info' || url.pathname === '/common/client-code') {
